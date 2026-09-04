@@ -1,0 +1,218 @@
+function doGet(e) {
+  var action = e && e.parameter && e.parameter.action ? e.parameter.action : "";
+  var callback = e && e.parameter && e.parameter.callback ? e.parameter.callback : "";
+  
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName("membres");
+  
+  // 1. Action : Obtenir le dernier scan
+  if (action === "getLastScan") {
+    var data = sheet.getDataRange().getValues();
+    var history = [];
+    var sorties = [];
+    
+    for (var i = 1; i < data.length; i++) {
+      var nom = data[i][3];
+      var prenom = data[i][4];
+      var id = data[i][10];
+      var arrivee = formaterHeurePropre(data[i][21]);
+      var depart = formaterHeurePropre(data[i][22]);
+      var photo = data[i][28];
+
+      if (!nom && !prenom) continue;
+      var nomComplet = (prenom + " " + nom).trim();
+
+      if (depart) {
+        sorties.push({ id: id, nom: nomComplet, statut: "Sorti", heure: depart, photoUrl: photo });
+      } else if (arrivee) {
+        history.push({ id: id, nom: nomComplet, statut: "Présent", heure: arrivee, photoUrl: photo });
+      }
+    }
+
+    var outputObj = { 
+      success: true, 
+      history: history.slice(-20).reverse(), 
+      sorties: sorties.slice(-20).reverse()
+    };
+
+    var jsonString = JSON.stringify(outputObj);
+    if (callback) {
+      return ContentService.createTextOutput(callback + "(" + jsonString + ");").setMimeType(ContentService.MimeType.JAVASCRIPT);
+    }
+    return ContentService.createTextOutput(jsonString).setMimeType(ContentService.MimeType.JSON);
+  }
+
+  // 2. Action : Obtenir la liste des membres inscrits (avec l'heure)
+  if (action === "getMembers") {
+    var data = sheet.getDataRange().getValues();
+    var members = [];
+    
+    for (var i = 1; i < data.length; i++) {
+      var nom = data[i][3];
+      var prenom = data[i][4];
+      var id = data[i][10];
+      var statut = String(data[i][20] || "").trim();
+      var arrivee = formaterHeurePropre(data[i][21]);
+      var depart = formaterHeurePropre(data[i][22]);
+      var photo = data[i][28];
+      
+      if (!nom && !prenom) continue;
+
+      var heureAffichee = "";
+      if (statut === "Présent") {
+        heureAffichee = arrivee || "";
+      } else if (statut === "Sorti") {
+        heureAffichee = depart || "";
+      }
+
+      members.push({
+        id: String(id),
+        nom: (prenom + " " + nom).trim(),
+        statut: statut || "Inscrit", // <-- On change "En attente" par "Inscrit" ici !
+        heure: heureAffichee,
+        photoUrl: photo || ""
+      });
+    }
+    
+    var outputObj = {
+      success: true,
+      total: members.length,
+      members: members
+    };
+    
+    var jsonString = JSON.stringify(outputObj);
+    if (callback) {
+      return ContentService.createTextOutput(callback + "(" + jsonString + ");").setMimeType(ContentService.MimeType.JAVASCRIPT);
+    }
+    return ContentService.createTextOutput(jsonString).setMimeType(ContentService.MimeType.JSON);
+  }
+
+  // 3. Action : Enregistrement d'une entrée
+  if (action === "entree") {
+    var code = e.parameter.code;
+    var data = sheet.getDataRange().getValues();
+    var foundRow = -1;
+    var memberName = "";
+    var memberPhoto = "";
+    var arriveeExistante = "";
+
+    var cleanCode = String(code).trim();
+
+    for (var i = 1; i < data.length; i++) {
+      var sheetId = String(data[i][10]).trim();
+      if (sheetId === cleanCode) {
+        foundRow = i + 1;
+        memberName = (data[i][4] + " " + data[i][3]).trim();
+        memberPhoto = data[i][28];
+        arriveeExistante = data[i][21]; // Colonne V (Arrivée)
+        break;
+      }
+    }
+
+    if (foundRow !== -1) {
+      var now = new Date();
+      
+      // Si l'entrée n'est pas encore enregistrée, on l'inscrit dans la colonne V (index 21 -> colonne 22) et le statut en U (colonne 21)
+      if (!arriveeExistante || String(arriveeExistante).trim() === "") {
+        sheet.getRange(foundRow, 22).setValue(now);
+        sheet.getRange(foundRow, 21).setValue("Présent");
+      }
+
+      var responseObj = {
+        status: "ok",
+        name: memberName,
+        photo: memberPhoto || "",
+        message: "Entrée enregistrée avec succès"
+      };
+      return ContentService.createTextOutput(JSON.stringify(responseObj)).setMimeType(ContentService.MimeType.JSON);
+    } else {
+      return ContentService.createTextOutput(JSON.stringify({ status: "error", message: "Membre non trouvé (ID: " + cleanCode + ")." })).setMimeType(ContentService.MimeType.JSON);
+    }
+  }
+
+  // 4. Action : Enregistrement d'une sortie
+  if (action === "sortie") {
+    var code = e.parameter.code;
+    var data = sheet.getDataRange().getValues();
+    var foundRow = -1;
+    var memberName = "";
+    var memberPhoto = "";
+    var arriveeExistante = "";
+
+    var cleanCode = String(code).trim();
+
+    for (var i = 1; i < data.length; i++) {
+      var sheetId = String(data[i][10]).trim();
+      if (sheetId === cleanCode) {
+        foundRow = i + 1;
+        memberName = (data[i][4] + " " + data[i][3]).trim();
+        memberPhoto = data[i][28];
+        arriveeExistante = data[i][21];
+        break;
+      }
+    }
+
+    if (foundRow !== -1) {
+      if (!arriveeExistante || String(arriveeExistante).trim() === "") {
+        return ContentService.createTextOutput(JSON.stringify({ 
+          status: "enquete_requise", 
+          message: "Sortie impossible : Aucune entrée enregistrée pour ce membre !",
+          name: memberName,
+          photo: memberPhoto
+        })).setMimeType(JSON.stringify ? JSON.stringify({status: "enquete_requise"}) : "").setMimeType(ContentService.MimeType.JSON);
+      }
+
+      var now = new Date();
+      sheet.getRange(foundRow, 23).setValue(now);
+      sheet.getRange(foundRow, 21).setValue("Sorti");
+      
+      var responseObj = {
+        status: "ok",
+        name: memberName,
+        photo: memberPhoto,
+        message: "Sortie enregistrée avec succès"
+      };
+      return ContentService.createTextOutput(JSON.stringify(responseObj)).setMimeType(ContentService.MimeType.JSON);
+    } else {
+      return ContentService.createTextOutput(JSON.stringify({ status: "error", message: "Membre non trouvé (ID: " + cleanCode + ")." })).setMimeType(ContentService.MimeType.JSON);
+    }
+  }
+
+  return ContentService.createTextOutput(JSON.stringify({ success: false, message: "Action inconnue" })).setMimeType(ContentService.MimeType.JSON);
+}
+
+function formaterHeurePropre(valeurCellule) {
+  if (!valeurCellule) return null;
+  if (valeurCellule instanceof Date) {
+    var h = String(valeurCellule.getHours()).padStart(2, '0');
+    var m = String(valeurCellule.getMinutes()).padStart(2, '0');
+    var s = String(valeurCellule.getSeconds()).padStart(2, '0');
+    return h + ":" + m + ":" + s;
+  }
+  var str = String(valeurCellule).trim();
+  if (str.includes("T")) {
+    var parts = str.split("T")[1];
+    return parts ? parts.substring(0, 8) : str;
+  }
+  return str.substring(0, 8);
+}
+
+function onFormSubmit(e) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName("membres");
+  var row = e && e.range ? e.range.getRow() : sheet.getLastRow();
+  
+  var statutCell = sheet.getRange(row, 21); // Colonne U
+  if (!statutCell.getValue()) {
+    statutCell.setValue("Inscrit");
+  }
+}
+
+
+
+
+
+
+
+
+
